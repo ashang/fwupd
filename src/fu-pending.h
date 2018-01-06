@@ -40,10 +40,15 @@ FuPending	*fu_pending_new				(void);
 
 gboolean	 fu_pending_add_device			(FuPending	*pending,
 							 FuDevice	*device,
+							 FwupdRelease	*release,
 							 GError		**error);
 gboolean	 fu_pending_set_update_state		(FuPending	*pending,
 							 FuDevice	*device,
 							 FwupdUpdateState update_state,
+							 GError		**error);
+gboolean	 fu_pending_set_device_flags		(FuPending	*pending,
+							 FuDevice	*device,
+							 FwupdDeviceFlags device_flags,
 							 GError		**error);
 gboolean	 fu_pending_set_error_msg		(FuPending	*pending,
 							 FuDevice	*device,

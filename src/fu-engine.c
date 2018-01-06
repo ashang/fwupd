@@ -645,6 +645,36 @@ fu_engine_store_get_app_by_guids (AsStore *store, FuDevice *device)
 }
 
 /**
+ * fu_engine_report:
+ * @self: A #FuEngine
+ * @device_id: A device ID
+ * @error: A #GError, or %NULL
+ *
+ * Sets the reported flag for a specific device. This ensures that other
+ * front-end clients for fwupd do not report the same event.
+ *
+ * Returns: %TRUE for success
+ **/
+gboolean
+fu_engine_report (FuEngine *self, const gchar *device_id, GError **error)
+{
+	g_autoptr(FuDevice) device = NULL;
+	device = fu_pending_get_device (self->pending, device_id, error);
+	if (device == NULL)
+		return FALSE;
+	if (fu_device_has_flag (device, FWUPD_DEVICE_FLAG_REPORTED)) {
+		g_set_error_literal (error,
+				     FWUPD_ERROR,
+				     FWUPD_ERROR_NOT_SUPPORTED,
+				     "device has already been reported");
+		return FALSE;
+	}
+	return fu_pending_set_device_flags (self->pending, device,
+					    fu_device_get_flags (device) | FWUPD_DEVICE_FLAG_REPORTED,
+					    error);
+}
+
+/**
  * fu_engine_verify:
  * @self: A #FuEngine
  * @device_id: A device ID
@@ -1151,8 +1181,11 @@ fu_engine_install (FuEngine *self,
 	const gchar *version;
 	gboolean is_downgrade;
 	gint vercmp;
+	g_autofree gchar *checksum = NULL;
 	g_autofree gchar *device_id_orig = NULL;
+	g_autoptr(FwupdRelease) release_history = fwupd_release_new ();
 	g_autoptr(GBytes) blob_fw2 = NULL;
+	g_autoptr(GError) error_local = NULL;
 
 	g_return_val_if_fail (FU_IS_ENGINE (self), FALSE);
 	g_return_val_if_fail (device_id != NULL, FALSE);
@@ -1191,7 +1224,6 @@ fu_engine_install (FuEngine *self,
 			     fu_device_get_id (device));
 		return FALSE;
 	}
-
 
 	/* called with online update, test if device is supposed to allow this */
 	if ((flags & FWUPD_INSTALL_FLAG_OFFLINE) == 0 &&
@@ -1303,7 +1335,6 @@ fu_engine_install (FuEngine *self,
 	}
 
 	version = as_release_get_version (rel);
-	fu_device_set_version_new (device, version);
 
 	/* compare to the lowest supported version, if it exists */
 	tmp = fu_device_get_version_lowest (device);
@@ -1363,6 +1394,19 @@ fu_engine_install (FuEngine *self,
 	/* save the chosen device ID in case the device goes away */
 	device_id_orig = g_strdup (fu_device_get_id (device));
 
+	/* mark this as modified even if we actually fail to do the update */
+	fu_device_set_modified (device, (guint64) g_get_real_time () / G_USEC_PER_SEC);
+
+	/* add device to database */
+	checksum = g_compute_checksum_for_bytes (G_CHECKSUM_SHA1, blob_cab);
+	fwupd_release_set_version (release_history, version);
+	fwupd_release_add_checksum (release_history, checksum);
+	fu_device_set_update_state (device, FWUPD_UPDATE_STATE_FAILED);
+	if (!fu_pending_remove_device (self->pending, device, error))
+		return FALSE;
+	if (!fu_pending_add_device (self->pending, device, release_history, error))
+		return FALSE;
+
 	/* do the update */
 	if (!fu_plugin_runner_update_detach (plugin, device, error))
 		return FALSE;
@@ -1374,8 +1418,15 @@ fu_engine_install (FuEngine *self,
 				      blob_cab,
 				      blob_fw2,
 				      flags,
-				      error)) {
+				      &error_local)) {
 		g_autoptr(GError) error_attach = NULL;
+
+		/* save to database */
+		fu_pending_set_update_state (self->pending, device, FWUPD_UPDATE_STATE_FAILED, NULL);
+		fu_pending_set_error_msg (self->pending, device, error_local->message, NULL);
+		g_propagate_error (error, g_steal_pointer (&error_local));
+
+		/* attack back into runtime */
 		if (!fu_plugin_runner_update_attach (plugin,
 						     device,
 						     &error_attach)) {
@@ -1421,9 +1472,23 @@ fu_engine_install (FuEngine *self,
 
 	/* make the UI update */
 	fu_device_set_status (device, FWUPD_STATUS_IDLE);
-	fu_device_set_modified (device, (guint64) g_get_real_time () / G_USEC_PER_SEC);
 	fu_engine_emit_device_changed (self, device);
 	fu_engine_emit_changed (self);
+
+	/* update database */
+	if (fu_device_has_flag (device, FWUPD_DEVICE_FLAG_NEEDS_REBOOT)) {
+		if (!fu_pending_set_update_state (self->pending, device,
+						  FWUPD_UPDATE_STATE_NEEDS_REBOOT,
+						  error))
+			return FALSE;
+	} else {
+		if (!fu_pending_set_update_state (self->pending, device,
+						  FWUPD_UPDATE_STATE_SUCCESS,
+						  error))
+			return FALSE;
+	}
+
+	/* success */
 	return TRUE;
 }
 
@@ -2153,6 +2218,36 @@ fu_engine_get_devices (FuEngine *self, GError **error)
 				     FWUPD_ERROR,
 				     FWUPD_ERROR_NOTHING_TO_DO,
 				     "No detected devices");
+		return NULL;
+	}
+	return g_steal_pointer (&devices);
+}
+
+/**
+ * fu_engine_get_history:
+ * @self: A #FuEngine
+ * @error: A #GError, or %NULL
+ *
+ * Gets the list of history.
+ *
+ * Returns: (transfer container) (element-type FwupdDevice): results
+ **/
+GPtrArray *
+fu_engine_get_history (FuEngine *self, GError **error)
+{
+	g_autoptr(GPtrArray) devices = NULL;
+
+	g_return_val_if_fail (FU_IS_ENGINE (self), NULL);
+	g_return_val_if_fail (error == NULL || *error == NULL, NULL);
+
+	devices = fu_pending_get_devices (self->pending, error);
+	if (devices == NULL)
+		return NULL;
+	if (devices->len == 0) {
+		g_set_error_literal (error,
+				     FWUPD_ERROR,
+				     FWUPD_ERROR_NOTHING_TO_DO,
+				     "No history");
 		return NULL;
 	}
 	return g_steal_pointer (&devices);
@@ -3050,6 +3145,91 @@ fu_engine_load_hwids (FuEngine *self)
 		g_warning ("Failed to load HWIDs: %s", error->message);
 }
 
+static gboolean
+fu_engine_update_pending_device (FuEngine *self, FuDevice *dev_pending, GError **error)
+{
+	FuDevice *dev;
+	FuPlugin *plugin;
+	FwupdRelease *rel_pending;
+
+	/* is in the device list */
+	dev = fu_device_list_find_by_id (self->device_list,
+					 fu_device_get_id (dev_pending),
+					 error);
+	if (dev == NULL)
+		return FALSE;
+
+	/* does the installed version match what we tried to install
+	 * before fwupd was restarted */
+	rel_pending = fu_device_get_release_default (dev_pending);
+	if (rel_pending == NULL) {
+		g_set_error_literal (error,
+				     FWUPD_ERROR,
+				     FWUPD_ERROR_INTERNAL,
+				     "no release for pending FuDevice");
+		return FALSE;
+	}
+
+	/* the system is running with the new firmware version */
+	if (g_strcmp0 (fu_device_get_version (dev),
+		       fwupd_release_get_version (rel_pending)) != 0) {
+		g_debug ("installed version %s matching pending %s",
+			 fu_device_get_version (dev),
+			 fwupd_release_get_version (rel_pending));
+		if (!fu_pending_set_update_state (self->pending, dev_pending,
+						  FWUPD_UPDATE_STATE_SUCCESS,
+						  error))
+			return FALSE;
+		return TRUE;
+	}
+
+	/* find the plugin that started the update */
+	plugin = fu_plugin_list_find_by_name (self->plugin_list,
+					      fu_device_get_plugin (dev),
+					      error);
+	if (plugin == NULL)
+		return FALSE;
+
+	/* the plugin knows the update state */
+	if (!fu_plugin_runner_get_results (plugin, dev, error))
+		return FALSE;
+	if (fu_device_get_update_state (dev) != FWUPD_UPDATE_STATE_NEEDS_REBOOT) {
+		if (!fu_pending_set_update_state (self->pending, dev,
+						  fu_device_get_update_state (dev),
+						  error))
+			return FALSE;
+		if (!fu_pending_set_error_msg (self->pending, dev,
+					       fu_device_get_update_error (dev),
+					       error))
+			return FALSE;
+	}
+	return TRUE;
+}
+
+static gboolean
+fu_engine_update_pending_database (FuEngine *self, GError **error)
+{
+	g_autoptr(GPtrArray) devices = NULL;
+
+	/* get any pending devices */
+	devices = fu_pending_get_devices (self->pending, error);
+	if (devices == NULL)
+		return FALSE;
+	for (guint i = 0; i < devices->len; i++) {
+		FuDevice *dev = g_ptr_array_index (devices, i);
+		g_autoptr(GError) error_local = NULL;
+
+		/* not in the required state */
+		if (fu_device_get_update_state (dev) != FWUPD_UPDATE_STATE_NEEDS_REBOOT)
+			continue;
+
+		/* try to save the new update-state, but ignoring any error */
+		if (!fu_engine_update_pending_device (self, dev, &error_local))
+			g_warning ("%s", error_local->message);
+	}
+	return TRUE;
+}
+
 /**
  * fu_engine_load:
  * @self: A #FuEngine
@@ -3131,6 +3311,10 @@ fu_engine_load (FuEngine *self, GError **error)
 			  G_CALLBACK (fu_engine_usb_device_removed_cb),
 			  self);
 	g_usb_context_enumerate (self->usb_ctx);
+
+	/* update the db for devices that were updated during the reboot */
+	if (!fu_engine_update_pending_database (self, error))
+		return FALSE;
 
 	/* success */
 	return TRUE;

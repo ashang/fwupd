@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*-
  *
- * Copyright (C) 2016-2017 Richard Hughes <richard@hughsie.com>
+ * Copyright (C) 2016-2018 Richard Hughes <richard@hughsie.com>
  *
  * Licensed under the GNU Lesser General Public License Version 2.1
  *
@@ -63,6 +63,9 @@ gboolean	 fwupd_client_connect			(FwupdClient	*client,
 GPtrArray	*fwupd_client_get_devices		(FwupdClient	*client,
 							 GCancellable	*cancellable,
 							 GError		**error);
+GPtrArray	*fwupd_client_get_history		(FwupdClient	*client,
+							 GCancellable	*cancellable,
+							 GError		**error);
 GPtrArray	*fwupd_client_get_releases		(FwupdClient	*client,
 							 const gchar	*device_id,
 							 GCancellable	*cancellable,
@@ -92,6 +95,10 @@ gboolean	 fwupd_client_unlock			(FwupdClient	*client,
 							 GCancellable	*cancellable,
 							 GError		**error);
 gboolean	 fwupd_client_clear_results		(FwupdClient	*client,
+							 const gchar	*device_id,
+							 GCancellable	*cancellable,
+							 GError		**error);
+gboolean	 fwupd_client_report			(FwupdClient	*client,
 							 const gchar	*device_id,
 							 GCancellable	*cancellable,
 							 GError		**error);

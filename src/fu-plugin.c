@@ -1034,6 +1034,7 @@ fu_plugin_runner_schedule_update (FuPlugin *plugin,
 	g_autofree gchar *filename = NULL;
 	g_autoptr(FuDevice) res_tmp = NULL;
 	g_autoptr(FuPending) pending = NULL;
+	g_autoptr(FwupdRelease) release = fwupd_release_new ();
 	g_autoptr(GFile) file = NULL;
 
 	/* id already exists */
@@ -1072,11 +1073,11 @@ fu_plugin_runner_schedule_update (FuPlugin *plugin,
 	/* schedule for next boot */
 	g_debug ("schedule %s to be installed to %s on next boot",
 		 filename, fu_device_get_id (device));
-	fu_device_set_filename_pending (device, filename);
+	fwupd_release_set_filename (release, filename);
 
 	/* add to database */
 	fu_device_set_update_state (device, FWUPD_UPDATE_STATE_PENDING);
-	if (!fu_pending_add_device (pending, device, error))
+	if (!fu_pending_add_device (pending, device, release, error))
 		return FALSE;
 
 	/* next boot we run offline */
@@ -1210,13 +1211,15 @@ fu_plugin_runner_update (FuPlugin *plugin,
 	/* cleanup */
 	if (device_pending != NULL) {
 		const gchar *tmp;
+		FwupdRelease *release;
 
 		/* update pending database */
 		fu_pending_set_update_state (pending, device,
 					     FWUPD_UPDATE_STATE_SUCCESS, NULL);
 
 		/* delete cab file */
-		tmp = fu_device_get_filename_pending (device_pending);
+		release = fu_device_get_release_default (device_pending);
+		tmp = fwupd_release_get_filename (release);
 		if (tmp != NULL && g_str_has_prefix (tmp, LIBEXECDIR)) {
 			g_autoptr(GError) error_local = NULL;
 			g_autoptr(GFile) file = NULL;
@@ -1291,6 +1294,8 @@ fu_plugin_runner_get_results (FuPlugin *plugin, FuDevice *device, GError **error
 	g_autoptr(GError) error_local = NULL;
 	g_autoptr(FuDevice) device_pending = NULL;
 	g_autoptr(FuPending) pending = NULL;
+	FwupdRelease *release;
+	FwupdRelease *release_pending;
 
 	/* not enabled */
 	if (!priv->enabled)
@@ -1346,9 +1351,11 @@ fu_plugin_runner_get_results (FuPlugin *plugin, FuDevice *device, GError **error
 	tmp = fu_device_get_version (device_pending);
 	if (tmp != NULL)
 		fu_device_set_version (device, tmp);
-	tmp = fu_device_get_version_new (device_pending);
+	release_pending = fu_device_get_release_default (device_pending);
+	release = fu_device_get_release_default (device);
+	tmp = fwupd_release_get_version (release_pending);
 	if (tmp != NULL)
-		fu_device_set_version_new (device, tmp);
+		fwupd_release_set_version (release, tmp);
 	return TRUE;
 }
 

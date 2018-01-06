@@ -83,6 +83,7 @@ fwupdmgr = executable(
   c_args : [
     cargs,
     '-DLOCALSTATEDIR="' + localstatedir + '"',
+    '-DSYSCONFDIR="' + default_sysconfdir + '"',
     '-DFU_OFFLINE_DESTDIR=""',
   ],
   install : true,
@@ -183,6 +184,7 @@ if get_option('tests')
     colorhug_pkcs7_signature,
     builder_test_firmware,
     hwid_test_firmware,
+    noreqs_test_firmware,
     sources : [
       keyring_src,
       'fu-self-test.c',

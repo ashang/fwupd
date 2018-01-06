@@ -313,6 +313,200 @@ fu_engine_downgrade_func (void)
 }
 
 static void
+fu_engine_history_func (void)
+{
+	gboolean ret;
+	g_autofree gchar *device_str_expected = NULL;
+	g_autofree gchar *device_str = NULL;
+	g_autofree gchar *filename = NULL;
+	g_autofree gchar *checksum = NULL;
+	g_autofree gchar *testdatadir = NULL;
+	g_autoptr(AsStore) store = NULL;
+	g_autoptr(FuDevice) device2 = NULL;
+	g_autoptr(FuDevice) device = fu_device_new ();
+	g_autoptr(FuEngine) engine = fu_engine_new ();
+	g_autoptr(FuPending) pending = NULL;
+	g_autoptr(FuPlugin) plugin = fu_plugin_new ();
+	g_autoptr(GBytes) blob_cab = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) devices = NULL;
+
+	/* set up dummy plugin */
+	fu_plugin_set_name (plugin, "test");
+	fu_engine_add_plugin (engine, plugin);
+
+	testdatadir = fu_test_get_filename (TESTDATADIR, ".");
+	g_assert (testdatadir != NULL);
+	g_setenv ("FU_SELF_TEST_REMOTES_DIR", testdatadir, TRUE);
+	ret = fu_engine_load (engine, &error);
+	g_assert_no_error (error);
+	g_assert (ret);
+	g_assert_cmpint (fu_engine_get_status (engine), ==, FWUPD_STATUS_IDLE);
+
+	/* add a device so we can get upgrade it */
+	fu_device_set_version (device, "1.2.2");
+	fu_device_set_id (device, "test_device");
+	fu_device_set_name (device, "Test Device");
+	fu_device_set_plugin (device, "test");
+	fu_device_add_guid (device, "12345678-1234-1234-1234-123456789012");
+	fu_device_add_flag (device, FWUPD_DEVICE_FLAG_UPDATABLE);
+	fu_device_set_created (device, 1515338000);
+	fu_engine_add_device (engine, device);
+	devices = fu_engine_get_devices (engine, &error);
+	g_assert_no_error (error);
+	g_assert (devices != NULL);
+	g_assert_cmpint (devices->len, ==, 1);
+	g_assert (fu_device_has_flag (device, FWUPD_DEVICE_FLAG_REGISTERED));
+
+	filename = fu_test_get_filename (TESTDATADIR, "missing-hwid/noreqs-1.2.3.cab");
+	g_assert (filename != NULL);
+	blob_cab = fu_common_get_contents_bytes	(filename, &error);
+	g_assert_no_error (error);
+	g_assert (blob_cab != NULL);
+	store = fu_engine_get_store_from_blob (engine, blob_cab, &error);
+	g_assert_no_error (error);
+	g_assert (store != NULL);
+
+	/* install it */
+	ret = fu_engine_install (engine, fu_device_get_id (device),
+				 store, blob_cab, FWUPD_INSTALL_FLAG_NONE, &error);
+	g_assert_no_error (error);
+	g_assert (ret);
+
+	/* check the pending database */
+	pending = fu_pending_new ();
+	device2 = fu_pending_get_device (pending, fu_device_get_id (device), &error);
+	g_assert_no_error (error);
+	g_assert (device2 != NULL);
+	g_assert_cmpint (fu_device_get_update_state (device2), ==, FWUPD_UPDATE_STATE_SUCCESS);
+	g_assert_cmpstr (fu_device_get_update_error (device2), ==, NULL);
+	fu_device_set_modified (device2, 1514338000);
+	device_str = fu_device_to_string (device2);
+	checksum = g_compute_checksum_for_bytes (G_CHECKSUM_SHA1, blob_cab);
+	device_str_expected = g_strdup_printf (
+		"Test Device\n"
+		"  DeviceId:             894e8c17a29428b09d10cd90d1db74ea76fbcfe8\n"
+		"  Guid:                 12345678-1234-1234-1234-123456789012\n"
+		"  Plugin:               test\n"
+		"  Flags:                updatable|registered\n"
+		"  Version:              1.2.2\n"
+		"  Created:              2018-01-07\n"
+		"  Modified:             2017-12-27\n"
+		"  UpdateState:          success\n"
+		"  \n"
+		"  [Release]\n"
+		"  Version:              1.2.3\n"
+		"  Checksum:             SHA1(%s)\n"
+		"  Vendor:               %s\n"
+		"  TrustFlags:           none\n",
+		checksum, VERSION);
+	ret = fu_test_compare_lines (device_str, device_str_expected, &error);
+	g_assert_no_error (error);
+	g_assert (ret);
+}
+
+static void
+fu_engine_history_error_func (void)
+{
+	gboolean ret;
+	g_autofree gchar *device_str_expected = NULL;
+	g_autofree gchar *device_str = NULL;
+	g_autofree gchar *filename = NULL;
+	g_autofree gchar *checksum = NULL;
+	g_autofree gchar *testdatadir = NULL;
+	g_autoptr(AsStore) store = NULL;
+	g_autoptr(FuDevice) device2 = NULL;
+	g_autoptr(FuDevice) device = fu_device_new ();
+	g_autoptr(FuEngine) engine = fu_engine_new ();
+	g_autoptr(FuPending) pending = NULL;
+	g_autoptr(FuPlugin) plugin = fu_plugin_new ();
+	g_autoptr(GBytes) blob_cab = NULL;
+	g_autoptr(GError) error2 = NULL;
+	g_autoptr(GError) error = NULL;
+	g_autoptr(GPtrArray) devices = NULL;
+
+	/* set up dummy plugin */
+	g_setenv ("FWUPD_PLUGIN_TEST", "fail", TRUE);
+	ret = fu_plugin_open (plugin, PLUGINBUILDDIR "/libfu_plugin_test.so", &error);
+	g_assert_no_error (error);
+	g_assert (ret);
+	fu_engine_add_plugin (engine, plugin);
+
+	testdatadir = fu_test_get_filename (TESTDATADIR, ".");
+	g_assert (testdatadir != NULL);
+	g_setenv ("FU_SELF_TEST_REMOTES_DIR", testdatadir, TRUE);
+	ret = fu_engine_load (engine, &error);
+	g_assert_no_error (error);
+	g_assert (ret);
+	g_assert_cmpint (fu_engine_get_status (engine), ==, FWUPD_STATUS_IDLE);
+
+	/* add a device so we can get upgrade it */
+	fu_device_set_version (device, "1.2.2");
+	fu_device_set_id (device, "test_device");
+	fu_device_set_name (device, "Test Device");
+	fu_device_set_plugin (device, "test");
+	fu_device_add_guid (device, "12345678-1234-1234-1234-123456789012");
+	fu_device_add_flag (device, FWUPD_DEVICE_FLAG_UPDATABLE);
+	fu_device_set_created (device, 1515338000);
+	fu_engine_add_device (engine, device);
+	devices = fu_engine_get_devices (engine, &error);
+	g_assert_no_error (error);
+	g_assert (devices != NULL);
+	g_assert_cmpint (devices->len, ==, 1);
+	g_assert (fu_device_has_flag (device, FWUPD_DEVICE_FLAG_REGISTERED));
+
+	/* install the wrong thing */
+	filename = fu_test_get_filename (TESTDATADIR, "missing-hwid/noreqs-1.2.3.cab");
+	g_assert (filename != NULL);
+	blob_cab = fu_common_get_contents_bytes	(filename, &error);
+	g_assert_no_error (error);
+	g_assert (blob_cab != NULL);
+	store = fu_engine_get_store_from_blob (engine, blob_cab, &error);
+	g_assert_no_error (error);
+	g_assert (store != NULL);
+	ret = fu_engine_install (engine, fu_device_get_id (device),
+				 store, blob_cab, FWUPD_INSTALL_FLAG_NONE, &error);
+	g_assert_error (error, FWUPD_ERROR, FWUPD_ERROR_NOT_SUPPORTED);
+	g_assert (error != NULL);
+	g_assert_cmpstr (error->message, ==,
+			 "device was not in supported mode");
+	g_assert (!ret);
+
+	/* check the pending database */
+	pending = fu_pending_new ();
+	device2 = fu_pending_get_device (pending, fu_device_get_id (device), &error2);
+	g_assert_no_error (error2);
+	g_assert (device2 != NULL);
+	g_assert_cmpint (fu_device_get_update_state (device2), ==, FWUPD_UPDATE_STATE_FAILED);
+	g_assert_cmpstr (fu_device_get_update_error (device2), ==, error->message);
+	g_clear_error (&error);
+	fu_device_set_modified (device2, 1514338000);
+	device_str = fu_device_to_string (device2);
+	checksum = g_compute_checksum_for_bytes (G_CHECKSUM_SHA1, blob_cab);
+	device_str_expected = g_strdup_printf (
+		"Test Device\n"
+		"  DeviceId:             894e8c17a29428b09d10cd90d1db74ea76fbcfe8\n"
+		"  Guid:                 12345678-1234-1234-1234-123456789012\n"
+		"  Plugin:               test\n"
+		"  Flags:                updatable|registered\n"
+		"  Version:              1.2.2\n"
+		"  Created:              2018-01-07\n"
+		"  Modified:             2017-12-27\n"
+		"  UpdateState:          failed\n"
+		"  UpdateError:          device was not in supported mode\n"
+		"  \n"
+		"  [Release]\n"
+		"  Version:              1.2.3\n"
+		"  Checksum:             SHA1(%s)\n"
+		"  Vendor:               %s\n"
+		"  TrustFlags:           none\n",
+		checksum, VERSION);
+	ret = fu_test_compare_lines (device_str, device_str_expected, &error);
+	g_assert_no_error (error);
+	g_assert (ret);
+}
+
+static void
 _device_list_count_cb (FuDeviceList *device_list, FuDevice *device, gpointer user_data)
 {
 	guint *cnt = (guint *) user_data;
@@ -790,6 +984,7 @@ fu_plugin_module_func (void)
 {
 	GError *error = NULL;
 	FuDevice *device_tmp;
+	FwupdRelease *release;
 	gboolean ret;
 	guint cnt = 0;
 	g_autofree gchar *mapped_file_fn = NULL;
@@ -805,6 +1000,7 @@ fu_plugin_module_func (void)
 
 	/* create a fake device */
 	plugin = fu_plugin_new ();
+	g_setenv ("FWUPD_PLUGIN_TEST", "registration", TRUE);
 	ret = fu_plugin_open (plugin, PLUGINBUILDDIR "/libfu_plugin_test.so", &error);
 	g_assert_no_error (error);
 	g_assert (ret);
@@ -854,10 +1050,12 @@ fu_plugin_module_func (void)
 	g_assert (device2 != NULL);
 	g_assert_cmpint (fu_device_get_update_state (device2), ==, FWUPD_UPDATE_STATE_PENDING);
 	g_assert_cmpstr (fu_device_get_update_error (device2), ==, NULL);
-	g_assert_cmpstr (fu_device_get_filename_pending (device2), !=, NULL);
+	release = fu_device_get_release_default (device2);
+	g_assert (release != NULL);
+	g_assert_cmpstr (fwupd_release_get_filename (release), !=, NULL);
 
 	/* save this; we'll need to delete it later */
-	pending_cap = g_strdup (fu_device_get_filename_pending (device2));
+	pending_cap = g_strdup (fwupd_release_get_filename (release));
 
 	/* lets do this online */
 	ret = fu_plugin_runner_update (plugin, device, blob_cab, NULL,
@@ -983,8 +1181,10 @@ static void
 fu_pending_func (void)
 {
 	GError *error = NULL;
+	GPtrArray *checksums;
 	gboolean ret;
 	FuDevice *device;
+	FwupdRelease *release;
 	g_autoptr(FuPending) pending = NULL;
 	g_autofree gchar *dirname = NULL;
 	g_autofree gchar *filename = NULL;
@@ -1003,14 +1203,21 @@ fu_pending_func (void)
 	/* add a device */
 	device = fu_device_new ();
 	fu_device_set_id (device, "self-test");
-	fu_device_set_filename_pending (device, "/var/lib/dave.cap"),
 	fu_device_set_name (device, "ColorHug"),
 	fu_device_set_version (device, "3.0.1"),
-	fu_device_set_version_new (device, "3.0.2");
 	fu_device_set_update_state (device, FWUPD_UPDATE_STATE_PENDING);
-	ret = fu_pending_add_device (pending, device, &error);
+	fu_device_add_guid (device, "827edddd-9bb6-5632-889f-2c01255503da");
+	fu_device_set_flags (device, FWUPD_DEVICE_FLAG_INTERNAL);
+	fu_device_set_created (device, 123);
+	fu_device_set_modified (device, 456);
+	release = fwupd_release_new ();
+	fwupd_release_set_filename (release, "/var/lib/dave.cap"),
+	fwupd_release_add_checksum (release, "abcdef");
+	fwupd_release_set_version (release, "3.0.2");
+	ret = fu_pending_add_device (pending, device, release, &error);
 	g_assert_no_error (error);
 	g_assert (ret);
+	g_object_unref (release);
 	g_object_unref (device);
 
 	/* ensure database was created */
@@ -1037,8 +1244,19 @@ fu_pending_func (void)
 	g_assert_cmpstr (fu_device_get_version (device), ==, "3.0.1");
 	g_assert_cmpint (fu_device_get_update_state (device), ==, FWUPD_UPDATE_STATE_PENDING);
 	g_assert_cmpstr (fu_device_get_update_error (device), ==, "word");
-	g_assert_cmpstr (fu_device_get_filename_pending (device), ==, "/var/lib/dave.cap");
-	g_assert_cmpstr (fu_device_get_version_new (device), ==, "3.0.2");
+	g_assert_cmpstr (fu_device_get_guid_default (device), ==, "827edddd-9bb6-5632-889f-2c01255503da");
+	g_assert_cmpint (fu_device_get_flags (device), ==, FWUPD_DEVICE_FLAG_INTERNAL);
+	g_assert_cmpint (fu_device_get_created (device), ==, 123);
+	g_assert_cmpint (fu_device_get_modified (device), ==, 456);
+	release = fu_device_get_release_default (device);
+	g_assert (release != NULL);
+	g_assert_cmpstr (fwupd_release_get_version (release), ==, "3.0.2");
+	g_assert_cmpstr (fwupd_release_get_filename (release), ==, "/var/lib/dave.cap");
+	g_assert_cmpstr (fwupd_release_get_vendor (release), ==, VERSION);
+	checksums = fwupd_release_get_checksums (release);
+	g_assert (checksums != NULL);
+	g_assert_cmpint (checksums->len, ==, 1);
+	g_assert_cmpstr (fwupd_checksum_get_by_kind (checksums, G_CHECKSUM_SHA1), ==, "abcdef");
 	g_object_unref (device);
 
 	/* get device that does not exist */
@@ -1724,6 +1942,8 @@ main (int argc, char **argv)
 	g_test_add_func ("/fwupd/device-list", fu_device_list_func);
 	g_test_add_func ("/fwupd/device-list{delay}", fu_device_list_delay_func);
 	g_test_add_func ("/fwupd/device-list{compatible}", fu_device_list_compatible_func);
+	g_test_add_func ("/fwupd/engine{history-success}", fu_engine_history_func);
+	g_test_add_func ("/fwupd/engine{history-error}", fu_engine_history_error_func);
 	g_test_add_func ("/fwupd/engine{require-hwid}", fu_engine_require_hwid_func);
 	g_test_add_func ("/fwupd/engine{partial-hash}", fu_engine_partial_hash_func);
 	g_test_add_func ("/fwupd/engine{downgrade}", fu_engine_downgrade_func);

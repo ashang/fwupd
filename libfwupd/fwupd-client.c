@@ -1,6 +1,6 @@
 /* -*- Mode: C; tab-width: 8; indent-tabs-mode: t; c-basic-offset: 8 -*-
  *
- * Copyright (C) 2016-2017 Richard Hughes <richard@hughsie.com>
+ * Copyright (C) 2016-2018 Richard Hughes <richard@hughsie.com>
  *
  * Licensed under the GNU Lesser General Public License Version 2.1
  *
@@ -384,6 +384,48 @@ fwupd_client_get_devices (FwupdClient *client, GCancellable *cancellable, GError
 }
 
 /**
+ * fwupd_client_get_history:
+ * @client: A #FwupdClient
+ * @cancellable: the #GCancellable, or %NULL
+ * @error: the #GError, or %NULL
+ *
+ * Gets all the history.
+ *
+ * Returns: (element-type FwupdDevice) (transfer container): results
+ *
+ * Since: 1.0.4
+ **/
+GPtrArray *
+fwupd_client_get_history (FwupdClient *client, GCancellable *cancellable, GError **error)
+{
+	FwupdClientPrivate *priv = GET_PRIVATE (client);
+	g_autoptr(GVariant) val = NULL;
+
+	g_return_val_if_fail (FWUPD_IS_CLIENT (client), NULL);
+	g_return_val_if_fail (cancellable == NULL || G_IS_CANCELLABLE (cancellable), NULL);
+	g_return_val_if_fail (error == NULL || *error == NULL, NULL);
+
+	/* connect */
+	if (!fwupd_client_connect (client, cancellable, error))
+		return NULL;
+
+	/* call into daemon */
+	val = g_dbus_proxy_call_sync (priv->proxy,
+				      "GetHistory",
+				      NULL,
+				      G_DBUS_CALL_FLAGS_NONE,
+				      -1,
+				      cancellable,
+				      error);
+	if (val == NULL) {
+		if (error != NULL)
+			fwupd_client_fixup_dbus_error (*error);
+		return NULL;
+	}
+	return fwupd_client_parse_devices_from_variant (val);
+}
+
+/**
  * fwupd_client_get_device_by_id:
  * @client: A #FwupdClient
  * @device_id: the device ID, e.g. `usb:00:01:03:03`
@@ -752,6 +794,55 @@ fwupd_client_clear_results (FwupdClient *client, const gchar *device_id,
 	helper = fwupd_client_helper_new ();
 	g_dbus_proxy_call (priv->proxy,
 			   "ClearResults",
+			   g_variant_new ("(s)", device_id),
+			   G_DBUS_CALL_FLAGS_NONE,
+			   -1,
+			   cancellable,
+			   fwupd_client_proxy_call_cb,
+			   helper);
+	g_main_loop_run (helper->loop);
+	if (!helper->ret) {
+		g_propagate_error (error, helper->error);
+		helper->error = NULL;
+		return FALSE;
+	}
+	return TRUE;
+}
+
+/**
+ * fwupd_client_report:
+ * @client: A #FwupdClient
+ * @device_id: the device ID
+ * @cancellable: the #GCancellable, or %NULL
+ * @error: the #GError, or %NULL
+ *
+ * Sets the reported flag for a specific device. This ensures that other
+ * front-end clients for fwupd do not report the same event.
+ *
+ * Returns: %TRUE for success
+ *
+ * Since: 1.0.4
+ **/
+gboolean
+fwupd_client_report (FwupdClient *client, const gchar *device_id,
+		     GCancellable *cancellable, GError **error)
+{
+	FwupdClientPrivate *priv = GET_PRIVATE (client);
+	g_autoptr(FwupdClientHelper) helper = NULL;
+
+	g_return_val_if_fail (FWUPD_IS_CLIENT (client), FALSE);
+	g_return_val_if_fail (device_id != NULL, FALSE);
+	g_return_val_if_fail (cancellable == NULL || G_IS_CANCELLABLE (cancellable), FALSE);
+	g_return_val_if_fail (error == NULL || *error == NULL, FALSE);
+
+	/* connect */
+	if (!fwupd_client_connect (client, cancellable, error))
+		return FALSE;
+
+	/* call into daemon */
+	helper = fwupd_client_helper_new ();
+	g_dbus_proxy_call (priv->proxy,
+			   "Report",
 			   g_variant_new ("(s)", device_id),
 			   G_DBUS_CALL_FLAGS_NONE,
 			   -1,
